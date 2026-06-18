@@ -7,21 +7,27 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  const { path, ...params } = req.query;
-  if (!path) {
-    return res.status(400).json({ error: 'Missing path parameter' });
+  const { api, path, ...params } = req.query;
+  
+  let url, headers;
+  
+  if (api === 'stats') {
+    const queryString = new URLSearchParams(params).toString();
+    url = `https://api.thestatsapi.com/api/${path}${queryString ? '?' + queryString : ''}`;
+    headers = {
+      'Authorization': `Bearer ${process.env.STATS_API_KEY}`,
+      'Accept': 'application/json',
+    };
+  } else {
+    const queryString = new URLSearchParams(params).toString();
+    url = `https://v3.football.api-sports.io/${path}${queryString ? '?' + queryString : ''}`;
+    headers = {
+      'x-apisports-key': process.env.FOOTBALL_API_KEY,
+    };
   }
 
-  const queryString = new URLSearchParams(params).toString();
-  const url = `https://v3.football.api-sports.io/${path}${queryString ? '?' + queryString : ''}`;
-
   try {
-    const response = await fetch(url, {
-      headers: {
-        'x-apisports-key': process.env.FOOTBALL_API_KEY,
-        'x-rapidapi-host': 'v3.football.api-sports.io',
-      },
-    });
+    const response = await fetch(url, { headers });
     const data = await response.json();
     res.setHeader('Content-Type', 'application/json');
     return res.status(200).json(data);
