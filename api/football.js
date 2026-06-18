@@ -1,7 +1,7 @@
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', '*');
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
@@ -19,9 +19,11 @@ export default async function handler(req, res) {
     const response = await fetch(url, {
       headers: {
         'x-apisports-key': process.env.FOOTBALL_API_KEY,
+        'x-rapidapi-host': 'v3.football.api-sports.io',
       },
     });
     const data = await response.json();
+    res.setHeader('Content-Type', 'application/json');
     return res.status(200).json(data);
   } catch (error) {
     return res.status(500).json({ error: error.message });
