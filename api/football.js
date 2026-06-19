@@ -8,22 +8,20 @@ export default async function handler(req, res) {
   }
 
   const { api, path, ...params } = req.query;
-  
-  let url, headers;
-  
-  if (api === 'stats') {
+  let url, headers = {};
+
+  if (api === 'footystats') {
+    const fsParams = { key: process.env.FOOTYSTATS_API_KEY, ...params };
+    const queryString = new URLSearchParams(fsParams).toString();
+    url = `https://api.football-data-api.com/${path}?${queryString}`;
+  } else if (api === 'stats') {
     const queryString = new URLSearchParams(params).toString();
     url = `https://api.thestatsapi.com/api/${path}${queryString ? '?' + queryString : ''}`;
-    headers = {
-      'Authorization': `Bearer ${process.env.STATS_API_KEY}`,
-      'Accept': 'application/json',
-    };
+    headers = { 'Authorization': `Bearer ${process.env.STATS_API_KEY}`, 'Accept': 'application/json' };
   } else {
     const queryString = new URLSearchParams(params).toString();
     url = `https://v3.football.api-sports.io/${path}${queryString ? '?' + queryString : ''}`;
-    headers = {
-      'x-apisports-key': process.env.FOOTBALL_API_KEY,
-    };
+    headers = { 'x-apisports-key': process.env.FOOTBALL_API_KEY };
   }
 
   try {
