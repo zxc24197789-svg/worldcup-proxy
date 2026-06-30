@@ -1,23 +1,20 @@
 // /api/odds.js
-// Vercel Serverless Function — proxy for The Odds API (the-odds-api.com)
+// Vercel Serverless Function — proxy for odds-api.io (NOT the-odds-api.com — different service!)
 //
-// 用途：把你的 ODDS_API_KEY 留在伺服器端，前端儀表板只打這支 endpoint，
-// 金鑰永遠不會出現在瀏覽器或對話紀錄裡。
+// odds-api.io 是「兩段式」API：
+//   1. GET /v3/events  → 拿到一批賽事列表（含 id、home、away、date）
+//   2. GET /v3/odds?eventId=... → 用上一步的 id 查該場賽事的賠率
 //
-// 部署：放進你現有 Vercel 專案的 /api/odds.js
-// 環境變數：在 Vercel 後台設定 ODDS_API_KEY（不要寫死在程式碼裡）
+// 用途：把你的 ODDS_API_KEY 留在伺服器端，前端只打這支 endpoint。
+// 環境變數：Vercel 後台設定 ODDS_API_KEY（odds-api.io 發的那把，不是 the-odds-api.com 的）
 
-const ODDS_API_BASE = 'https://api.the-odds-api.com/v4';
+const ODDS_API_BASE = 'https://api.odds-api.io/v3';
 
-// 簡單記憶體快取：同一個 serverless instance 內 60 秒內重複請求直接回快取，
-// 避免短時間內重複打 API、浪費你的免費額度（100次/小時）。
-// 注意：Vercel serverless 是無狀態的，instance 可能隨時被回收，
-// 這只是「盡力而為」的省用量機制，不是嚴格快取。
-let cache = {};
-const CACHE_TTL_MS = 60 * 1000;
+// 簡單記憶體快取，降低重複請求（serverless instance 可能隨時被回收，這只是盡力而為）
+let cache = { events: null, eventsTs: 0 };
+const EVENTS_TTL_MS = 120 * 1000; // 賽事列表變動慢，快取2分鐘
 
 export default async function handler(req, res) {
-  // CORS：只允許你自己的網域呼叫（部署後請把 '*' 換成你的實際網域）
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   if (req.method === 'OPTIONS') { res.status(200).end(); return; }
@@ -32,48 +29,67 @@ export default async function handler(req, res) {
     return;
   }
 
-  // 前端可傳入的參數：
-  //   sport   - 預設 'soccer_fifa_world_cup'
-  //   markets - 預設 'h2h,totals'（1X2 + 大小球）；可加 'spreads'（讓分）
-  //   regions - 預設 'eu'（歐洲莊家，賠率格式跟 Stake 一致）
-  const sport = req.query.sport || 'soccer_fifa_world_cup';
-  const markets = req.query.markets || 'h2h,totals';
-  const regions = req.query.regions || 'eu';
-  const oddsFormat = req.query.oddsFormat || 'decimal';
-
-  const cacheKey = `${sport}|${markets}|${regions}|${oddsFormat}`;
-  const cached = cache[cacheKey];
-  if (cached && (Date.now() - cached.ts) < CACHE_TTL_MS) {
-    res.setHeader('X-Cache', 'HIT');
-    res.status(200).json(cached.data);
-    return;
-  }
+  const action = req.query.action || 'events'; // 'events' | 'odds'
 
   try {
-    const url = `${ODDS_API_BASE}/sports/${encodeURIComponent(sport)}/odds/` +
-      `?apiKey=${apiKey}&regions=${regions}&markets=${markets}&oddsFormat=${oddsFormat}`;
+    if (action === 'events') {
+      // 抓世界盃相關賽事列表
+      const now = Date.now();
+      if (cache.events && (now - cache.eventsTs) < EVENTS_TTL_MS) {
+        res.setHeader('X-Cache', 'HIT');
+        res.status(200).json(cache.events);
+        return;
+      }
 
-    const upstream = await fetch(url);
-    const remaining = upstream.headers.get('x-requests-remaining');
-    const used = upstream.headers.get('x-requests-used');
+      const sport = req.query.sport || 'football';
+      const url = `${ODDS_API_BASE}/events?apiKey=${apiKey}&sport=${encodeURIComponent(sport)}`;
+      const upstream = await fetch(url);
 
-    if (!upstream.ok) {
-      const errText = await upstream.text();
-      res.status(upstream.status).json({
-        error: '上游 Odds API 回傳錯誤',
-        status: upstream.status,
-        detail: errText,
-      });
+      if (!upstream.ok) {
+        const errText = await upstream.text();
+        res.status(upstream.status).json({
+          error: '上游 odds-api.io /events 回傳錯誤',
+          status: upstream.status,
+          detail: errText,
+        });
+        return;
+      }
+
+      const data = await upstream.json();
+      cache.events = data;
+      cache.eventsTs = now;
+      res.setHeader('X-Cache', 'MISS');
+      res.status(200).json(data);
       return;
     }
 
-    const data = await upstream.json();
-    cache[cacheKey] = { data, ts: Date.now() };
+    if (action === 'odds') {
+      // 用 eventId 查特定賽事的賠率（前端先呼叫 action=events 找到對應的 id 再帶進來）
+      const eventId = req.query.eventId;
+      if (!eventId) {
+        res.status(400).json({ error: '缺少 eventId 參數' });
+        return;
+      }
+      const bookmakers = req.query.bookmakers || ''; // 例如 'Bet365,Pinnacle'，留空則回傳全部
+      var url = `${ODDS_API_BASE}/odds?apiKey=${apiKey}&eventId=${encodeURIComponent(eventId)}`;
+      if (bookmakers) url += `&bookmakers=${encodeURIComponent(bookmakers)}`;
 
-    res.setHeader('X-Cache', 'MISS');
-    if (remaining) res.setHeader('X-RateLimit-Remaining', remaining);
-    if (used) res.setHeader('X-RateLimit-Used', used);
-    res.status(200).json(data);
+      const upstream = await fetch(url);
+      if (!upstream.ok) {
+        const errText = await upstream.text();
+        res.status(upstream.status).json({
+          error: '上游 odds-api.io /odds 回傳錯誤',
+          status: upstream.status,
+          detail: errText,
+        });
+        return;
+      }
+      const data = await upstream.json();
+      res.status(200).json(data);
+      return;
+    }
+
+    res.status(400).json({ error: '未知的 action 參數，應為 events 或 odds' });
   } catch (e) {
     res.status(500).json({ error: '請求失敗', detail: String(e) });
   }
